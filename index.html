@@ -705,15 +705,50 @@ let _state = null;
 let _useFirebase = false; // set true once Firebase confirms working
 
 function mk(){
-  const s={started:false,teams:{},log:[]};
-  for(let i=1;i<=4;i++)s.teams[i]={online:false,stage:1,prog:{1:0,2:0,3:0,4:0},
-    ans:{},hints:H0,skips:S0,hintUsed:{},done:[],
-    wsFound:[],wsH:H0,wsS:S0,wsHP:[]};
+  const s={started:false,teams:{},log:['init']};
+  for(let i=1;i<=4;i++)s.teams[i]={
+    online:false, stage:1,
+    prog:{1:0,2:0,3:0,4:0},
+    ans:{_:0},          /* Firebase strips empty {}, placeholder keeps key alive */
+    hints:H0, skips:S0,
+    hintUsed:{_:0},     /* same */
+    done:[0],           /* Firebase strips empty [], placeholder keeps key alive */
+    wsFound:[''],
+    wsH:H0, wsS:S0, wsHP:['']
+  };
   return s;
 }
 function gs(){ return _state || mk(); }
+
+/* Firebase strips empty objects/arrays, so normalize team state
+   every time we read it to ensure all fields exist */
+function nt(ts){
+  if(!ts) return {online:false,stage:1,prog:{1:0,2:0,3:0,4:0},ans:{},hints:H0,skips:S0,hintUsed:{},done:[],wsFound:[],wsH:H0,wsS:S0,wsHP:[]};
+  ts.ans     = (ts.ans     && ts.ans._     !== undefined) ? Object.fromEntries(Object.entries(ts.ans).filter(([k])=>k!=='_'))     : (ts.ans||{});
+  ts.hintUsed= (ts.hintUsed&& ts.hintUsed._!== undefined) ? Object.fromEntries(Object.entries(ts.hintUsed).filter(([k])=>k!=='_')): (ts.hintUsed||{});
+  ts.done    = Array.isArray(ts.done) ? ts.done.filter(x=>x!==0) : [];
+  ts.wsFound = Array.isArray(ts.wsFound) ? ts.wsFound.filter(x=>x!=='') : [];
+  ts.wsHP    = Array.isArray(ts.wsHP)    ? ts.wsHP.filter(x=>x!=='')    : [];
+  ts.prog    = ts.prog||{1:0,2:0,3:0,4:0};
+  ts.hints   = ts.hints??H0;
+  ts.skips   = ts.skips??S0;
+  ts.wsH     = ts.wsH??H0;
+  ts.wsS     = ts.wsS??S0;
+  ts.stage   = ts.stage||1;
+  return ts;
+}
 function sv(s){
   _state = s;
+  /* Re-add Firebase placeholders so empty objects/arrays survive */
+  if(s.teams){
+    Object.values(s.teams).forEach(ts=>{
+      if(ts.ans  && Object.keys(ts.ans).length===0)   ts.ans={_:0};
+      if(ts.hintUsed && Object.keys(ts.hintUsed).length===0) ts.hintUsed={_:0};
+      if(Array.isArray(ts.done)    && ts.done.filter(x=>x!==0).length===0)    ts.done=[0];
+      if(Array.isArray(ts.wsFound) && ts.wsFound.filter(x=>x!=='').length===0) ts.wsFound=[''];
+      if(Array.isArray(ts.wsHP)    && ts.wsHP.filter(x=>x!=='').length===0)    ts.wsHP=[''];
+    });
+  }
   if(_useFirebase && GAME_REF){
     GAME_REF.set(s).catch(err=>{
       console.warn('Firebase write failed, using localStorage:', err);
@@ -827,7 +862,8 @@ function doLogin(){
 function enterTeam(n){
   cTeam=n;isHost=false;
   const s=gs();
-  if(!s.teams[n])s.teams[n]={online:false,stage:1,prog:{1:0,2:0,3:0,4:0},ans:{},hints:H0,skips:S0,hintUsed:{},done:[],wsFound:[],wsH:H0,wsS:S0,wsHP:[]};
+  if(!s.teams[n])s.teams[n]={online:false,stage:1,prog:{1:0,2:0,3:0,4:0},ans:{_:0},hints:H0,skips:S0,hintUsed:{_:0},done:[0],wsFound:[''],wsH:H0,wsS:S0,wsHP:['']};
+  nt(s.teams[n]);
   s.teams[n].online=true;sv(s);
   /* auto mark offline if browser closes */
   if(DB) DB.ref('gameState/teams/'+n+'/online').onDisconnect().set(false);
@@ -929,7 +965,7 @@ function hostReset(){
 function rLB(elId){
   const s=gs();const el=document.getElementById(elId);if(!el)return;
   el.innerHTML=Object.entries(TEAMS).map(([id,t])=>{
-    const ts=s.teams[id]||{stage:1,prog:{},done:[]};
+    const ts=nt(s.teams[id]||{});
     const stage=ts.stage||1;const prog=ts.prog||{};
     const total=STAGE_META[stage]?STAGE_META[stage].total:1;
     const cur=prog[stage]||0;const sc=ts.done||[];
@@ -963,10 +999,10 @@ function startGP(){
 function initS1(){
   fIdx=0;
   rBar('s1-bar',1,`<button class="done-stage-btn" onclick="stageComplete(1)">DONE</button>`);
-  rLB('s1-lb');rTabs();rFloor();
+  rLB('s1-lb'); rTabs(); rFloor();
 }
 function updS1(){
-  const s=gs();const ts=s.teams[cTeam];
+  const s=gs();const ts=nt(s.teams[cTeam]);
   ts.prog=ts.prog||{};ts.prog[1]=Object.keys(ts.ans).length;sv(s);
   if(Object.keys(ts.ans).length>=TOTAL_EMOJI&&!ts.done.includes(1)){
     ts.done.push(1);s.log=s.log||[];
@@ -976,6 +1012,8 @@ function updS1(){
 }
 function rTabs(){
   const s=gs();const ts=s.teams[cTeam];
+  if(!ts) return;
+  nt(ts);
   document.getElementById('ftabs').innerHTML=
     FLOORS.map((f,i)=>{
       const done=f.rooms.filter(r=>ts.ans[rk(f.floor,r.name)]).length===f.rooms.length;
@@ -988,6 +1026,11 @@ function rTabs(){
 }
 function rFloor(){
   const s=gs();const f=FLOORS[fIdx];const ts=s.teams[cTeam];
+  if(!f||!ts) return;
+  nt(ts);
+  const fbanner=document.getElementById('fbanner');
+  const rgrid=document.getElementById('rgrid');
+  if(!fbanner||!rgrid) return;
   const sol=f.rooms.filter(r=>{const a=ts.ans[rk(f.floor,r.name)];return a&&!a.skip;}).length;
   const skp=f.rooms.filter(r=>{const a=ts.ans[rk(f.floor,r.name)];return a&&a.skip;}).length;
   document.getElementById('fbanner').innerHTML=
