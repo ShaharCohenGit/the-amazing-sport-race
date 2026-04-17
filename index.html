@@ -5,6 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>The Amazing Sport Race</title>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500&display=swap" rel="stylesheet">
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyDtuJbVYHRHrXsArK1mimxggwvPOKdv82c",
+  authDomain: "the-amazing-sport-race.firebaseapp.com",
+  databaseURL: "https://the-amazing-sport-race-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "the-amazing-sport-race",
+  storageBucket: "the-amazing-sport-race.firebasestorage.app",
+  messagingSenderId: "1047531665166",
+  appId: "1:1047531665166:web:237be61e3445f0fce8c95f"
+};
+firebase.initializeApp(firebaseConfig);
+const DB = firebase.database();
+const GAME_REF = DB.ref('gameState');
+</script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -652,8 +669,9 @@ let wsGrid=[], wsWords=[], wsDragging=false, wsStart=null, wsCurrent=null;
 let wsFound=[], wsFoundCells=new Set(), wsHintParts=[];
 let wsH=H0, wsS=S0;
 
-/* ─── STORAGE ─── */
-function gs(){try{return JSON.parse(localStorage.getItem('ar7')||'null')||mk();}catch{return mk();}}
+/* ─── FIREBASE STORAGE ─── */
+let _state = null; // local cache of current state
+
 function mk(){
   const s={started:false,teams:{},log:[]};
   for(let i=1;i<=4;i++)s.teams[i]={online:false,stage:1,prog:{1:0,2:0,3:0,4:0},
@@ -661,8 +679,47 @@ function mk(){
     wsFound:[],wsH:H0,wsS:S0,wsHP:[]};
   return s;
 }
-function sv(s){localStorage.setItem('ar7',JSON.stringify(s));}
-if(!localStorage.getItem('ar7'))sv(mk());
+function gs(){ return _state || mk(); }
+function sv(s){
+  _state = s;
+  GAME_REF.set(s).catch(err=>console.warn('Firebase write failed:',err));
+}
+
+/* Real-time listener — keeps _state in sync and re-renders current screen */
+function startFirebaseListener(){
+  GAME_REF.on('value', snap => {
+    const data = snap.val();
+    if(!data){ _state = mk(); return; }
+    _state = data;
+    // Re-render leaderboard on the currently active screen
+    const active = document.querySelector('.screen.active');
+    if(!active) return;
+    const id = active.id;
+    if(id==='host-screen'){ rHost(); return; }
+    if(!cTeam) return;
+    const stage = (_state.teams[cTeam]||{}).stage||1;
+    const lbId = 's'+stage+'-lb';
+    rLB(lbId);
+    // Also update topbar score/resource chips if on stage screens
+    if(id==='stage1-screen'){ rTabs(); }
+    if(id==='stage2-screen'){ renderS2Res(); }
+  });
+}
+
+/* Bootstrap: load state from Firebase, then start listener */
+function initFirebase(callback){
+  GAME_REF.once('value').then(snap => {
+    const data = snap.val();
+    _state = data || mk();
+    if(!data) GAME_REF.set(_state); // first run — seed empty state
+    startFirebaseListener();
+    if(callback) callback();
+  }).catch(err => {
+    console.warn('Firebase read failed, using local fallback:', err);
+    _state = mk();
+    if(callback) callback();
+  });
+}
 
 /* ─── HELPERS ─── */
 function rk(fl,nm){return fl+'_'+nm.replace(/[^a-zA-Z0-9]/g,'_');}
@@ -715,6 +772,8 @@ function enterTeam(n){
   const s=gs();
   if(!s.teams[n])s.teams[n]={online:false,stage:1,prog:{1:0,2:0,3:0,4:0},ans:{},hints:H0,skips:S0,hintUsed:{},done:[],wsFound:[],wsH:H0,wsS:S0,wsHP:[]};
   s.teams[n].online=true;sv(s);
+  /* auto mark offline if browser closes */
+  DB.ref('gameState/teams/'+n+'/online').onDisconnect().set(false);
   if(s.started)goToStage();else{ss('waiting-screen');rWait();startWP();}
 }
 function goToStage(){
@@ -733,7 +792,16 @@ function logout(){
 /* ═══════════════════════════════════════
    WAITING
 ═══════════════════════════════════════ */
-function startWP(){const iv=setInterval(()=>{const s=gs();rWait(s);if(s.started){clearInterval(iv);goToStage();}},1500);}
+function startWP(){
+  /* Firebase listener will call goToStage when s.started flips to true */
+  GAME_REF.on('value', snap => {
+    const data = snap.val(); if(!data) return;
+    rWait(data);
+    if(data.started && !isHost && cTeam){
+      goToStage();
+    }
+  });
+}
 function rWait(s){
   s=s||gs();const t=TEAMS[cTeam];
   document.getElementById('pit-sub').innerHTML=
@@ -779,7 +847,11 @@ function rHost(){
 function hostStart(){const s=gs();s.started=true;sv(s);rHost();showN('Race started!','ok');}
 function hostReset(){
   if(!confirm('Reset ALL game progress for ALL teams? This cannot be undone.'))return;
-  sv(mk());rHost();showN('Game fully reset!','warn');
+  const fresh = mk();
+  _state = fresh;
+  GAME_REF.set(fresh).then(()=>{
+    rHost();showN('Game fully reset!','warn');
+  });
 }
 
 /* ═══════════════════════════════════════
@@ -812,8 +884,8 @@ function rBar(elId,stage,extra=''){
     <button class="exit-btn" style="margin-left:auto" onclick="logout()">Exit</button>`;
 }
 function startGP(){
+  /* leaderboard updates come from the Firebase real-time listener */
   clearInterval(gIv);
-  gIv=setInterval(()=>{const stage=(gs().teams[cTeam]||{}).stage||1;rLB('s'+stage+'-lb');},2500);
 }
 
 /* ═══════════════════════════════════════
@@ -1162,7 +1234,6 @@ function rFinished(){
   const bg=document.getElementById('rbg');
   for(let i=0;i<18;i++){
     const d=document.createElement('div');d.className='rdot';
-    /* Use same rdot style from race-bg, defined inline */
     d.style.cssText=`position:absolute;width:3px;height:3px;border-radius:50%;background:var(--yellow);opacity:0;
       animation:dotfly var(--dur,6s) linear var(--del,0s) infinite;
       left:${Math.random()*100}%;top:${Math.random()*100}%;
@@ -1171,6 +1242,11 @@ function rFinished(){
     bg.appendChild(d);
   }
 })();
+
+/* Boot — load Firebase state then show login */
+initFirebase(() => {
+  console.log('Firebase ready. State loaded.');
+});
 </script>
 </body>
 </html>
