@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
 <title>The Amazing Sport Race</title>
 <!-- Fonts with network fallback -->
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500&display=swap" rel="stylesheet">
@@ -319,7 +319,7 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
 /* Word search grid */
 .ws-wrap{background:var(--surface);border:1px solid rgba(245,200,0,0.2);border-left:4px solid var(--yellow);padding:1rem;margin-bottom:1rem;overflow-x:auto;}
 .ws-grid-label{font-family:'Oswald',sans-serif;font-size:10px;letter-spacing:3px;color:var(--yellow);text-transform:uppercase;margin-bottom:8px;}
-.ws-grid{display:inline-grid;cursor:crosshair;user-select:none;border:1px solid rgba(255,255,255,0.06);overflow:hidden;}
+.ws-grid{display:inline-grid;cursor:crosshair;user-select:none;border:1px solid rgba(255,255,255,0.06);overflow:hidden;touch-action:none;}
 .ws-cell{width:36px;height:36px;display:flex;align-items:center;justify-content:center;
   font-family:'Oswald',sans-serif;font-size:15px;font-weight:700;color:var(--text);
   transition:background 0.08s;border:0.5px solid rgba(255,255,255,0.04);}
@@ -439,7 +439,7 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
   position:absolute;top:3px;left:5px;z-index:1;}
 /* Floating pieces */
 .p3-piece{position:absolute;cursor:grab;user-select:none;z-index:50;
-  background:transparent;border:none;outline:none;
+  background:transparent;border:none;outline:none;touch-action:none;
   filter:drop-shadow(1px 3px 6px rgba(0,0,0,0.85));}
 .p3-piece:hover{z-index:60;filter:drop-shadow(2px 5px 12px rgba(245,200,0,0.5));}
 .p3-piece.dragging-piece{cursor:grabbing;z-index:500;
@@ -1333,10 +1333,51 @@ function renderWSGrid(){
     }
   }
   document.addEventListener('mouseup',wsUp);
+  /* Touch support for mobile */
+  grid.addEventListener('touchstart', wsTouchStart, {passive:false});
+  grid.addEventListener('touchmove',  wsTouchMove,  {passive:false});
+  grid.addEventListener('touchend',   wsTouchEnd,   {passive:false});
 }
 function wsDown(e){e.preventDefault();wsDragging=true;wsStart={r:+e.currentTarget.dataset.r,c:+e.currentTarget.dataset.c};wsCurrent=wsStart;hlSel();}
 function wsOver(e){if(!wsDragging)return;wsCurrent={r:+e.currentTarget.dataset.r,c:+e.currentTarget.dataset.c};hlSel();}
 function wsUp(){if(!wsDragging)return;wsDragging=false;chkSel();wsStart=null;wsCurrent=null;hlSel();}
+/* ── Stage 2 touch handlers ── */
+function wsCellFromPoint(x, y){
+  const el = document.elementFromPoint(x, y);
+  if(el && el.classList.contains('ws-cell')) return el;
+  return null;
+}
+function wsTouchStart(e){
+  e.preventDefault();
+  const t = e.touches[0];
+  const cell = wsCellFromPoint(t.clientX, t.clientY);
+  if(!cell) return;
+  wsDragging=true;
+  wsStart={r:+cell.dataset.r, c:+cell.dataset.c};
+  wsCurrent=wsStart;
+  hlSel();
+}
+function wsTouchMove(e){
+  e.preventDefault();
+  if(!wsDragging) return;
+  const t = e.touches[0];
+  const cell = wsCellFromPoint(t.clientX, t.clientY);
+  if(!cell) return;
+  const nr=+cell.dataset.r, nc=+cell.dataset.c;
+  if(!wsCurrent || wsCurrent.r!==nr || wsCurrent.c!==nc){
+    wsCurrent={r:nr, c:nc};
+    hlSel();
+  }
+}
+function wsTouchEnd(e){
+  e.preventDefault();
+  if(!wsDragging) return;
+  wsDragging=false;
+  chkSel();
+  wsStart=null; wsCurrent=null;
+  hlSel();
+}
+
 function getSel(){
   if(!wsStart||!wsCurrent)return[];
   const dr=Math.sign(wsCurrent.r-wsStart.r),dc=Math.sign(wsCurrent.c-wsStart.c);
@@ -2033,6 +2074,8 @@ function p3MakePieceEl(p){
   el.style.width  = canvas.width  + 'px';
   el.style.height = canvas.height + 'px';
   el.addEventListener('mousedown', e=>p3StartDrag(e, el, p));
+  /* Touch support for mobile */
+  el.addEventListener('touchstart', e=>p3TouchStart(e, el, p), {passive:false});
   return el;
 }
 
@@ -2081,6 +2124,53 @@ function p3StartDrag(e, el, piece){
   }
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
+}
+
+/* ── Stage 3 touch handlers ── */
+function p3TouchStart(e, el, piece){
+  e.preventDefault();
+  const t = e.touches[0];
+  const rect = el.getBoundingClientRect();
+  const offX = t.clientX - rect.left;
+  const offY = t.clientY - rect.top;
+  el.classList.add('dragging-piece');
+
+  function onMove(ev){
+    ev.preventDefault();
+    const t2 = ev.touches[0];
+    const gw2 = document.querySelector('#stage3-screen .p3-gw');
+    const pr2 = gw2 ? gw2.getBoundingClientRect() : {left:0,top:0};
+    el.style.left = (t2.clientX - offX - pr2.left)+'px';
+    el.style.top  = (t2.clientY - offY - pr2.top )+'px';
+  }
+  function onEnd(ev){
+    ev.preventDefault();
+    el.removeEventListener('touchmove', onMove);
+    el.removeEventListener('touchend',  onEnd);
+    el.classList.remove('dragging-piece');
+    const lastTouch = ev.changedTouches[0];
+    /* Check if dropped on correct board cell */
+    const board = document.getElementById('p3-board-canvas');
+    if(board){
+      const br  = board.getBoundingClientRect();
+      const gw3 = document.querySelector('#stage3-screen .p3-gw');
+      const pr3 = gw3 ? gw3.getBoundingClientRect() : {left:0,top:0};
+      const pcx = (lastTouch.clientX - offX - pr3.left) + el.offsetWidth/2  - (br.left - pr3.left);
+      const pcy = (lastTouch.clientY - offY - pr3.top ) + el.offsetHeight/2 - (br.top  - pr3.top );
+      const col = Math.floor(pcx / p3CellW);
+      const row = Math.floor(pcy / p3CellH);
+      if(col>=0&&col<PUZZLE_COLS&&row>=0&&row<PUZZLE_ROWS){
+        const targetIdx = row*PUZZLE_COLS+col;
+        if(targetIdx === piece.idx){ p3PlacePiece(piece.idx); return; }
+        else showN('Wrong spot — try again!','err');
+      }
+    }
+    /* Stays where dropped */
+    p3PiecePos[piece.idx] = {x:parseFloat(el.style.left), y:parseFloat(el.style.top)};
+    saveP3();
+  }
+  el.addEventListener('touchmove', onMove, {passive:false});
+  el.addEventListener('touchend',  onEnd,  {passive:false});
 }
 
 function p3PlacePiece(idx, skipSave){
